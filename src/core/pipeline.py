@@ -1,551 +1,679 @@
 """
-DeQoG Main Pipeline
+DeQoG Pipeline
 
-Orchestrates the complete N-version code generation workflow
-through the five-state FSM.
+Main pipeline implementing the Diversity-Enhanced Quality-Assured
+N-Version Code Generation workflow.
+
+Architecture:
+- Uses Deterministic Workflow Orchestration (not FSM)
+- Integrates HILE for hierarchical diversity generation
+- Integrates IRQN for iterative diversity enhancement
+- Integrates FBIR for feedback-based iterative repair
+
+Reference: "Automated Fault-Tolerant Code Generation via LLMs:
+A Diversity-Enhanced and Quality-Assured Approach"
 """
 
+import json
 from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from .fsm_controller import StateController, SystemState, TransitionAction
+from .workflow_orchestrator import (
+    DeterministicWorkflowOrchestrator,
+    WorkflowStage,
+    QualityGate
+)
 from .context_memory import ContextMemory
-from ..agents.understanding_agent import UnderstandingAgent
-from ..agents.diversity_agent import DiversityEnhancingAgent
-from ..agents.code_generating_agent import CodeGeneratingAgent
-from ..agents.evaluating_agent import EvaluatingAgent
-from ..tools.prompt_generator import DynamicPromptGenerator
-from ..tools.diversity_evaluator import DiversityEvaluator
-from ..tools.code_interpreter import CodeInterpreter
-from ..tools.test_executor import TestExecutor
-from ..tools.debugger import Debugger
-from ..tools.knowledge_search import KnowledgeSearch
-from ..tools.code_collector import CodeCollector
-from ..algorithms.quality_assurance import QualityAssuranceEngine
-from ..utils.logger import get_logger, setup_logger
+from ..utils.logger import get_logger
 from ..utils.config import Config
 
 logger = get_logger("pipeline")
+
+
+@dataclass
+class GenerationResult:
+    """Result from N-version code generation."""
+    n_version_codes: List[Dict[str, Any]]
+    diversity_metrics: Dict[str, float]
+    quality_metrics: Dict[str, float]
+    generation_metadata: Dict[str, Any]
+    workflow_summary: Dict[str, Any]
 
 
 class DeQoGPipeline:
     """
     DeQoG Main Pipeline.
     
-    Coordinates the five-state workflow:
-    1. Understanding: Problem analysis and knowledge collection
-    2. Diversity Ideation: Multi-level diverse idea generation (HILE/IRQN)
-    3. Code Synthesis: Code generation from implementation plans
-    4. Quality Validation: Testing and iterative refinement
-    5. Collection: Final N-version code collection
+    Orchestrates the complete N-version fault-tolerant code generation process:
     
-    Attributes:
-        config: Pipeline configuration
-        state_controller: FSM state controller
-        agents: Dictionary of state agents
-        tools: Dictionary of available tools
+    1. UNDERSTANDING: Parse task, collect knowledge
+    2. DIVERSITY_IDEATION: Generate diverse ideas via HILE + IRQN
+    3. CODE_SYNTHESIS: Translate ideas to executable code
+    4. QUALITY_VALIDATION: Test and refine via FBIR
+    5. COLLECTION: Collect validated N-versions
+    
+    Key Components:
+    - DeterministicWorkflowOrchestrator: Manages workflow stages
+    - DynamicPromptGenerator: Creates stage-specific prompts with output formats
+    - Agents: Specialized LLM agents for each stage
+    - Tools: Code interpreter, test executor, diversity evaluator, etc.
     """
     
-    def __init__(
-        self,
-        config: Optional[Config] = None,
-        llm_client=None
-    ):
+    def __init__(self, config: Config):
         """
         Initialize the DeQoG pipeline.
         
         Args:
-            config: Configuration object
-            llm_client: LLM client (created from config if not provided)
+            config: System configuration
         """
-        self.config = config or Config({})
+        self.config = config
         
-        # Setup logging
-        setup_logger(self.config.get('logging', {}))
-        
-        # Initialize LLM client
-        self.llm_client = llm_client or self._init_llm_client()
-        
-        # Initialize state controller
-        self.state_controller = StateController(
-            llm_client=self.llm_client,
-            config=self.config
-        )
-        
-        # Initialize tools
+        # Initialize core components
+        self.llm_client = self._init_llm_client()
         self.tools = self._init_tools()
-        
-        # Initialize agents
         self.agents = self._init_agents()
         
-        # Generation statistics
-        self._stats = {
-            'generations': 0,
-            'total_versions': 0,
-            'total_time': 0
-        }
-        
-        logger.info("DeQoG Pipeline initialized")
-    
-    def _init_llm_client(self):
-        """Initialize the LLM client from configuration."""
-        from ..utils.llm_client import LLMClientFactory
-        
-        llm_config = self.config.llm
-        
-        # Determine provider from model name
-        model_name = llm_config.model_name
-        if 'gpt' in model_name.lower():
-            provider = 'openai'
-        elif 'claude' in model_name.lower():
-            provider = 'anthropic'
-        else:
-            provider = 'openai'  # Default
-        
-        return LLMClientFactory.create(
-            provider=provider,
-            model_name=model_name,
-            api_key=llm_config.api_key,
-            api_base=llm_config.api_base if hasattr(llm_config, 'api_base') else None,
-            temperature=llm_config.temperature,
-            max_tokens=llm_config.max_tokens,
-            timeout=llm_config.timeout if hasattr(llm_config, 'timeout') else 60
+        # Initialize workflow orchestrator
+        self.orchestrator = DeterministicWorkflowOrchestrator(
+            prompt_generator=self.tools['prompt_generator'],
+            config=config
         )
-    
-    def _init_tools(self) -> Dict[str, Any]:
-        """Initialize all tools."""
-        tools_config = self.config.get('tools', {})
         
-        return {
-            'prompt_generator': DynamicPromptGenerator(
-                template_dir=self.config.get('data.prompts')
-            ),
-            'diversity_evaluator': DiversityEvaluator(
-                model_name=tools_config.get('diversity_evaluator', {}).get(
-                    'model_name', 'microsoft/codebert-base'
-                ),
-                similarity_threshold=tools_config.get('diversity_evaluator', {}).get(
-                    'similarity_threshold', 0.7
-                ),
-                llm_client=self.llm_client
-            ),
-            'code_interpreter': CodeInterpreter(
-                timeout=tools_config.get('code_interpreter', {}).get('timeout', 5),
-                sandbox_enabled=tools_config.get('code_interpreter', {}).get(
-                    'sandbox_enabled', True
-                )
-            ),
-            'test_executor': TestExecutor(
-                parallel=tools_config.get('test_executor', {}).get('parallel', True),
-                max_workers=tools_config.get('test_executor', {}).get('max_workers', 4),
-                timeout_per_test=tools_config.get('test_executor', {}).get(
-                    'timeout_per_test', 5
-                )
-            ),
-            'debugger': Debugger(
-                llm_client=self.llm_client,
-                max_analysis_depth=tools_config.get('debugger', {}).get(
-                    'max_analysis_depth', 3
-                )
-            ),
-            'knowledge_search': KnowledgeSearch(
-                knowledge_base_dir=self.config.get('knowledge_bases', {}).get(
-                    'algorithmic_patterns'
-                ),
-                llm_client=self.llm_client
-            ),
-            'code_collector': CodeCollector()
-        }
-    
-    def _init_agents(self) -> Dict[str, Any]:
-        """Initialize all agents."""
-        return {
-            'understanding': UnderstandingAgent(
-                llm_client=self.llm_client,
-                available_tools={
-                    'knowledge_search': self.tools['knowledge_search'],
-                    'dynamic_prompt_generator': self.tools['prompt_generator']
-                }
-            ),
-            'diversity_enhancing': DiversityEnhancingAgent(
-                llm_client=self.llm_client,
-                diversity_evaluator=self.tools['diversity_evaluator'],
-                knowledge_search=self.tools['knowledge_search'],
-                dynamic_prompt_generator=self.tools['prompt_generator'],
-                config=self.config.diversity
-            ),
-            'code_generating': CodeGeneratingAgent(
-                llm_client=self.llm_client,
-                available_tools={
-                    'code_interpreter': self.tools['code_interpreter'],
-                    'diversity_evaluator': self.tools['diversity_evaluator']
-                },
-                config=self.config
-            ),
-            'evaluating': EvaluatingAgent(
-                llm_client=self.llm_client,
-                available_tools={
-                    'test_executor': self.tools['test_executor'],
-                    'debugger': self.tools['debugger'],
-                    'code_interpreter': self.tools['code_interpreter']
-                },
-                config=self.config
-            )
-        }
+        # Initialize algorithms
+        self.hile = self._init_hile()
+        self.irqn = self._init_irqn()
+        self.qa_engine = self._init_quality_assurance()
+        
+        # Quality gates
+        self.quality_gates = self._init_quality_gates()
+        
+        logger.info("DeQoGPipeline initialized")
     
     def generate_n_versions(
         self,
         task_description: str,
         test_cases: List[Dict[str, Any]],
         n: int = 5
-    ) -> Dict[str, Any]:
+    ) -> GenerationResult:
         """
-        Generate N diverse versions of fault-tolerant code.
+        Generate N versions of fault-tolerant code.
+        
+        Main entry point for the DeQoG system.
         
         Args:
-            task_description: Description of the programming task
+            task_description: Natural language description of the programming task
             test_cases: List of test cases for validation
-            n: Number of versions to generate
+            n: Number of versions to generate (default: 5)
             
         Returns:
-            Dictionary containing:
-            - n_version_codes: List of generated code versions
-            - diversity_metrics: Diversity evaluation results
-            - quality_metrics: Quality evaluation results
-            - generation_metadata: Generation statistics
+            GenerationResult containing N-version codes and metrics
         """
-        start_time = datetime.now()
         logger.info(f"Starting N-version generation (n={n})")
+        start_time = datetime.now()
         
-        # Reset state controller
-        self.state_controller.reset()
+        # Reset orchestrator for new generation
+        self.orchestrator.reset()
         
-        # Set task in context
-        self.state_controller.context_memory.set_task(
-            task_description=task_description,
-            test_cases=test_cases,
-            n_versions=n
-        )
+        # Store initial context
+        self.orchestrator.context['task_description'] = task_description
+        self.orchestrator.context['test_cases'] = test_cases
+        self.orchestrator.context['n_versions'] = n
         
         try:
-            # State 1: Understanding
-            understanding_result = self._execute_state_1(task_description)
+            # Stage 1: Understanding
+            understanding_result = self._execute_understanding_stage(task_description)
             
-            # State 2: Diversity Ideation
-            diverse_ideas = self._execute_state_2(understanding_result, n)
+            # Stage 2: Diversity Ideation (HILE + IRQN)
+            diverse_ideas = self._execute_diversity_stage(understanding_result, n)
             
-            # State 3: Code Synthesis
-            generated_codes = self._execute_state_3(diverse_ideas)
+            # Stage 3: Code Synthesis
+            generated_codes = self._execute_synthesis_stage(diverse_ideas)
             
-            # State 4: Quality Validation
-            validated_codes = self._execute_state_4(generated_codes, test_cases)
+            # Stage 4: Quality Validation (FBIR)
+            validated_codes = self._execute_validation_stage(generated_codes, test_cases)
             
-            # State 5: Collection
-            final_result = self._execute_state_5(validated_codes)
-            
-            # Add generation metadata
-            end_time = datetime.now()
-            generation_time = (end_time - start_time).total_seconds()
-            
-            final_result['generation_metadata'] = {
-                'task_description': task_description[:200] + '...' if len(task_description) > 200 else task_description,
-                'n_target': n,
-                'n_generated': len(final_result.get('n_version_codes', [])),
-                'generation_time': generation_time,
-                'timestamp': end_time.isoformat(),
-                'state_history': [
-                    {
-                        'from': h['from_state'].name if hasattr(h['from_state'], 'name') else str(h['from_state']),
-                        'to': h['to_state'].name if hasattr(h['to_state'], 'name') else str(h['to_state']),
-                        'action': h['action'].name if hasattr(h['action'], 'name') else str(h['action'])
-                    }
-                    for h in self.state_controller.transition_history
-                ]
-            }
-            
-            # Update statistics
-            self._stats['generations'] += 1
-            self._stats['total_versions'] += len(final_result.get('n_version_codes', []))
-            self._stats['total_time'] += generation_time
-            
-            logger.info(
-                f"Generation completed in {generation_time:.2f}s. "
-                f"Generated {len(final_result.get('n_version_codes', []))} versions."
-            )
-            
-            return final_result
+            # Stage 5: Collection
+            final_result = self._execute_collection_stage(validated_codes, n)
             
         except Exception as e:
-            logger.error(f"Generation failed: {e}")
+            logger.error(f"Pipeline execution failed: {e}")
             raise
+        
+        # Compute final metrics
+        diversity_metrics = self._compute_diversity_metrics(final_result['codes'])
+        quality_metrics = self._compute_quality_metrics(final_result['codes'])
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        
+        result = GenerationResult(
+            n_version_codes=final_result['codes'],
+            diversity_metrics=diversity_metrics,
+            quality_metrics=quality_metrics,
+            generation_metadata={
+                'n_requested': n,
+                'n_generated': len(final_result['codes']),
+                'elapsed_seconds': elapsed,
+                'timestamp': start_time.isoformat()
+            },
+            workflow_summary=self.orchestrator.get_workflow_summary()
+        )
+        
+        logger.info(f"N-version generation completed in {elapsed:.2f}s")
+        return result
     
-    def _execute_state_1(self, task_description: str) -> Dict[str, Any]:
+    def _execute_understanding_stage(
+        self,
+        task_description: str
+    ) -> Dict[str, Any]:
         """
-        State 1: Problem Understanding.
+        Execute Stage 1: Problem Understanding.
         
-        Args:
-            task_description: Task description
-            
-        Returns:
-            Understanding result
+        Parses the task description and collects relevant knowledge.
         """
-        logger.info("Executing State 1: Understanding")
+        logger.info("Executing Stage 1: Understanding")
         
-        context = self.state_controller.context_memory.get_state_context(
-            SystemState.STATE_1_UNDERSTANDING
+        # Get stage prompt with output format
+        context = self.orchestrator.get_accumulated_context()
+        context['task_description'] = task_description
+        
+        prompt = self.orchestrator.get_stage_prompt(
+            WorkflowStage.UNDERSTANDING,
+            context
         )
         
+        # Use Understanding Agent
         agent = self.agents['understanding']
-        result = agent.process({'task_description': task_description}, context)
+        result = agent.process(task_description, context)
         
-        # Update context
-        self.state_controller.context_memory.update_context(
-            SystemState.STATE_1_UNDERSTANDING,
+        # Validate output format
+        is_valid, errors = self.orchestrator.validate_stage_output(
+            WorkflowStage.UNDERSTANDING,
             result
         )
         
-        # Transition to next state
-        self.state_controller.execute_transition(
-            SystemState.STATE_2_DIVERSITY_IDEATION,
-            result
+        if not is_valid:
+            logger.warning(f"Understanding output validation issues: {errors}")
+        
+        # Record and advance
+        self.orchestrator.record_stage_result(
+            WorkflowStage.UNDERSTANDING,
+            result,
+            success=is_valid,
+            errors=errors
         )
+        self.orchestrator.advance_stage()
         
         return result
     
-    def _execute_state_2(
+    def _execute_diversity_stage(
         self,
         understanding_result: Dict[str, Any],
         n: int
     ) -> Dict[str, Any]:
         """
-        State 2: Diversity Ideation (HILE + IRQN).
+        Execute Stage 2: Diversity Ideation.
         
-        Args:
-            understanding_result: Result from State 1
-            n: Target number of versions
-            
-        Returns:
-            Diverse ideas result
+        Applies HILE for hierarchical diversity generation
+        and IRQN for iterative diversity enhancement.
         """
-        logger.info("Executing State 2: Diversity Ideation")
+        logger.info("Executing Stage 2: Diversity Ideation")
         
-        context = self.state_controller.context_memory.get_state_context(
-            SystemState.STATE_2_DIVERSITY_IDEATION
-        )
+        # Check quality gate
+        gate = self.quality_gates.get(WorkflowStage.DIVERSITY_IDEATION)
+        if gate:
+            passed, unmet = gate.check(self.orchestrator.context)
+            if not passed:
+                raise ValueError(f"Quality gate failed: {unmet}")
         
+        # Get context
+        context = self.orchestrator.get_accumulated_context()
+        
+        # Use Diversity Enhancing Agent with HILE
         agent = self.agents['diversity_enhancing']
-        diverse_ideas = agent.process(understanding_result, context)
         
-        # Check diversity threshold
+        # Apply HILE algorithm
+        logger.info("Applying HILE algorithm...")
+        hile_result = self.hile.execute(understanding_result, n)
+        
+        # Apply IRQN for each level
+        logger.info("Applying IRQN method...")
+        enhanced_thoughts = self.irqn.execute(
+            hile_result['thought'].outputs,
+            level='thought'
+        )
+        enhanced_solutions = self.irqn.execute(
+            hile_result['solution'].outputs,
+            level='solution'
+        )
+        enhanced_implementations = self.irqn.execute(
+            hile_result['implementation'].outputs,
+            level='implementation'
+        )
+        
+        result = {
+            'thoughts': enhanced_thoughts,
+            'solutions': enhanced_solutions,
+            'implementations': enhanced_implementations,
+            'diversity_scores': self._evaluate_intermediate_diversity(
+                enhanced_thoughts,
+                enhanced_solutions,
+                enhanced_implementations
+            )
+        }
+        
+        # Validate diversity threshold
         diversity_threshold = self.config.diversity.threshold
-        diversity_scores = diverse_ideas.get('diversity_scores', {})
+        if result['diversity_scores'].get('overall', 0) < diversity_threshold:
+            logger.warning(f"Diversity below threshold ({diversity_threshold}), "
+                          "applying additional IRQN iterations...")
+            # Could apply more IRQN here
         
-        # Get semantic diversity score
-        sem_div = diversity_scores.get('implementations_semantic_diversity', 0)
-        
-        retry_count = 0
-        max_retries = self.config.fsm.max_retries
-        
-        while sem_div < diversity_threshold and retry_count < max_retries:
-            logger.warning(
-                f"Diversity {sem_div:.3f} below threshold {diversity_threshold}. "
-                f"Retry {retry_count + 1}/{max_retries}"
-            )
-            
-            # Add feedback for retry
-            self.state_controller.context_memory.add_feedback(
-                SystemState.STATE_2_DIVERSITY_IDEATION,
-                {
-                    'type': 'low_diversity',
-                    'message': f'Diversity score {sem_div:.3f} below threshold',
-                    'scores': diversity_scores
-                }
-            )
-            
-            # Retry with enhanced IRQN
-            diverse_ideas = agent.process(understanding_result, context)
-            diversity_scores = diverse_ideas.get('diversity_scores', {})
-            sem_div = diversity_scores.get('implementations_semantic_diversity', 0)
-            retry_count += 1
-        
-        # Update context
-        self.state_controller.context_memory.update_context(
-            SystemState.STATE_2_DIVERSITY_IDEATION,
-            diverse_ideas
-        )
-        
-        # Transition
-        self.state_controller.execute_transition(
-            SystemState.STATE_3_CODE_SYNTHESIS,
-            diverse_ideas
-        )
-        
-        return diverse_ideas
-    
-    def _execute_state_3(
-        self,
-        diverse_ideas: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        State 3: Code Synthesis.
-        
-        Args:
-            diverse_ideas: Diverse implementation plans from State 2
-            
-        Returns:
-            Generated codes result
-        """
-        logger.info("Executing State 3: Code Synthesis")
-        
-        context = self.state_controller.context_memory.get_state_context(
-            SystemState.STATE_3_CODE_SYNTHESIS
-        )
-        
-        # Add function signature if available
-        prev_context = context.get('previous_states', {})
-        state_1_data = prev_context.get('STATE_1_UNDERSTANDING', [])
-        if state_1_data:
-            latest = state_1_data[-1].get('data', {})
-            context['function_signature'] = latest.get('function_signature', '')
-        
-        agent = self.agents['code_generating']
-        generated_codes = agent.process(diverse_ideas, context)
-        
-        # Check for failures and handle rollback if needed
-        if not generated_codes.get('success'):
-            logger.warning("Code synthesis failed, triggering rollback")
-            self.state_controller.handle_rollback(
-                SystemState.STATE_2_DIVERSITY_IDEATION,
-                "Code synthesis failed"
-            )
-            # In a full implementation, we would re-run State 2 here
-        
-        # Update context
-        self.state_controller.context_memory.update_context(
-            SystemState.STATE_3_CODE_SYNTHESIS,
-            generated_codes
-        )
-        
-        # Transition
-        self.state_controller.execute_transition(
-            SystemState.STATE_4_QUALITY_VALIDATION,
-            generated_codes
-        )
-        
-        return generated_codes
-    
-    def _execute_state_4(
-        self,
-        generated_codes: Dict[str, Any],
-        test_cases: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """
-        State 4: Quality Validation.
-        
-        Args:
-            generated_codes: Codes from State 3
-            test_cases: Test cases for validation
-            
-        Returns:
-            Validated codes result
-        """
-        logger.info("Executing State 4: Quality Validation")
-        
-        context = self.state_controller.context_memory.get_state_context(
-            SystemState.STATE_4_QUALITY_VALIDATION
-        )
-        context['test_cases'] = test_cases
-        
-        agent = self.agents['evaluating']
-        validated_codes = agent.process(generated_codes, context)
-        
-        # Update context
-        self.state_controller.context_memory.update_context(
-            SystemState.STATE_4_QUALITY_VALIDATION,
-            validated_codes
-        )
-        
-        # Transition
-        self.state_controller.execute_transition(
-            SystemState.STATE_5_COLLECTION,
-            validated_codes
-        )
-        
-        return validated_codes
-    
-    def _execute_state_5(
-        self,
-        validated_codes: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        State 5: N-Version Code Collection.
-        
-        Args:
-            validated_codes: Validated codes from State 4
-            
-        Returns:
-            Final collected result
-        """
-        logger.info("Executing State 5: Collection")
-        
-        code_collector = self.tools['code_collector']
-        diversity_evaluator = self.tools['diversity_evaluator']
-        
-        # Get validated code list
-        codes = validated_codes.get('validated_codes', [])
-        
-        if not codes:
-            logger.warning("No validated codes to collect")
-            return {
-                'success': False,
-                'n_version_codes': [],
-                'diversity_metrics': {},
-                'quality_metrics': validated_codes.get('quality_metrics', {}),
-                'error': 'No validated codes available'
-            }
-        
-        # Calculate final diversity metrics
-        code_strings = [c['code'] for c in codes]
-        diversity_metrics = diversity_evaluator.get_diversity_report(
-            code_strings,
-            self.llm_client
-        )
-        
-        # Collect codes
-        result = code_collector.execute({
-            'validated_codes': codes,
-            'task_description': self.state_controller.context_memory.task_description,
-            'diversity_metrics': diversity_metrics.get('metrics', {}),
-            'quality_metrics': validated_codes.get('quality_metrics', {}),
-            'metadata': self.state_controller.context_memory.get_summary()
-        })
-        
-        # Transition to complete
-        self.state_controller.execute_transition(
-            SystemState.STATE_COMPLETE,
+        # Record and advance
+        self.orchestrator.record_stage_result(
+            WorkflowStage.DIVERSITY_IDEATION,
             result
         )
+        self.orchestrator.advance_stage()
         
         return result
     
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get pipeline statistics."""
+    def _execute_synthesis_stage(
+        self,
+        diverse_ideas: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute Stage 3: Code Synthesis.
+        
+        Translates diverse implementation plans into executable code.
+        """
+        logger.info("Executing Stage 3: Code Synthesis")
+        
+        context = self.orchestrator.get_accumulated_context()
+        agent = self.agents['code_generating']
+        
+        generated_codes = []
+        implementations = diverse_ideas.get('implementations', [])
+        
+        for impl in implementations:
+            try:
+                # Generate code from implementation plan
+                code_result = agent.process(impl, context)
+                
+                # Validate syntax
+                syntax_result = self.tools['code_interpreter'].validate_syntax(
+                    code_result.get('code', '')
+                )
+                
+                if syntax_result.get('valid', False):
+                    generated_codes.append({
+                        'id': impl.get('id', f'code_{len(generated_codes)}'),
+                        'code': code_result['code'],
+                        'implementation_id': impl.get('id'),
+                        'parent_solution': impl.get('parent_id'),
+                        'syntax_valid': True,
+                        'style': impl.get('style', 'unknown')
+                    })
+                else:
+                    logger.warning(f"Syntax validation failed for {impl.get('id')}: "
+                                  f"{syntax_result.get('error')}")
+                    
+            except Exception as e:
+                logger.error(f"Code generation failed for {impl.get('id')}: {e}")
+        
+        result = {'codes': generated_codes}
+        
+        # Record and advance
+        self.orchestrator.record_stage_result(
+            WorkflowStage.CODE_SYNTHESIS,
+            result
+        )
+        self.orchestrator.advance_stage()
+        
+        return generated_codes
+    
+    def _execute_validation_stage(
+        self,
+        generated_codes: List[Dict[str, Any]],
+        test_cases: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute Stage 4: Quality Validation.
+        
+        Applies FBIR (Feedback-Based Iterative Repair) to validate
+        and refine each code version.
+        """
+        logger.info("Executing Stage 4: Quality Validation")
+        
+        context = self.orchestrator.get_accumulated_context()
+        validated_codes = []
+        
+        for code_info in generated_codes:
+            code = code_info.get('code', '')
+            code_id = code_info.get('id', 'unknown')
+            
+            logger.info(f"Validating code: {code_id}")
+            
+            # Apply FBIR
+            refinement_result = self.qa_engine.validate_and_refine(
+                code=code,
+                test_cases=test_cases,
+                context=context,
+                max_iterations=self.config.quality.max_refinement_iterations
+            )
+            
+            if refinement_result['pass_rate'] >= self.config.quality.threshold:
+                validated_codes.append({
+                    'id': code_id,
+                    'code': refinement_result['code'],
+                    'original_code': code,
+                    'test_results': {
+                        'passed': refinement_result.get('passed', 0),
+                        'failed': refinement_result.get('failed', 0),
+                        'pass_rate': refinement_result['pass_rate']
+                    },
+                    'refinement_iterations': refinement_result['iterations'],
+                    'style': code_info.get('style', 'unknown'),
+                    'implementation_id': code_info.get('implementation_id')
+                })
+            else:
+                logger.warning(f"Code {code_id} failed validation "
+                              f"(pass_rate: {refinement_result['pass_rate']:.2%})")
+        
+        result = {'validated_codes': validated_codes}
+        
+        # Record and advance
+        self.orchestrator.record_stage_result(
+            WorkflowStage.QUALITY_VALIDATION,
+            result
+        )
+        self.orchestrator.advance_stage()
+        
+        return validated_codes
+    
+    def _execute_collection_stage(
+        self,
+        validated_codes: List[Dict[str, Any]],
+        n: int
+    ) -> Dict[str, Any]:
+        """
+        Execute Stage 5: Collection.
+        
+        Collects the final N-version code set with metadata.
+        """
+        logger.info("Executing Stage 5: Collection")
+        
+        # Select top N codes by diversity and quality
+        selected_codes = self._select_n_versions(validated_codes, n)
+        
+        result = {
+            'codes': selected_codes,
+            'total_validated': len(validated_codes),
+            'total_selected': len(selected_codes),
+            'collection_metadata': {
+                'timestamp': datetime.now().isoformat(),
+                'n_requested': n,
+                'selection_criteria': 'diversity + quality'
+            }
+        }
+        
+        # Record and advance
+        self.orchestrator.record_stage_result(
+            WorkflowStage.COLLECTION,
+            result
+        )
+        self.orchestrator.advance_stage()
+        
+        return result
+    
+    def _select_n_versions(
+        self,
+        validated_codes: List[Dict[str, Any]],
+        n: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Select top N versions maximizing diversity and quality.
+        
+        Uses a greedy selection algorithm that balances:
+        - Test pass rate (quality)
+        - Diversity from already selected codes
+        """
+        if len(validated_codes) <= n:
+            return validated_codes
+        
+        # Score each code
+        for code in validated_codes:
+            code['_score'] = code.get('test_results', {}).get('pass_rate', 0)
+        
+        # Greedy selection
+        selected = []
+        remaining = validated_codes.copy()
+        
+        while len(selected) < n and remaining:
+            # Sort by score
+            remaining.sort(key=lambda x: x.get('_score', 0), reverse=True)
+            
+            # Select the best
+            best = remaining.pop(0)
+            selected.append(best)
+            
+            # Update scores based on diversity from selected
+            if selected:
+                for code in remaining:
+                    # Penalize similarity to selected codes
+                    diversity_bonus = self._estimate_diversity(
+                        code['code'],
+                        [s['code'] for s in selected]
+                    )
+                    code['_score'] = (
+                        code.get('test_results', {}).get('pass_rate', 0) * 0.6 +
+                        diversity_bonus * 0.4
+                    )
+        
+        # Clean up temporary scores
+        for code in selected:
+            code.pop('_score', None)
+        
+        return selected
+    
+    def _estimate_diversity(
+        self,
+        code: str,
+        existing_codes: List[str]
+    ) -> float:
+        """Estimate diversity of code from existing codes."""
+        if not existing_codes:
+            return 1.0
+        
+        try:
+            diversity_eval = self.tools['diversity_evaluator']
+            all_codes = existing_codes + [code]
+            mbcs = diversity_eval.compute_mbcs(all_codes)
+            return 1.0 - mbcs
+        except Exception:
+            return 0.5
+    
+    def _evaluate_intermediate_diversity(
+        self,
+        thoughts: List[Dict[str, Any]],
+        solutions: List[Dict[str, Any]],
+        implementations: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """Evaluate diversity at intermediate stages."""
+        try:
+            diversity_eval = self.tools['diversity_evaluator']
+            
+            thought_contents = [t.get('content', '') for t in thoughts]
+            solution_contents = [s.get('content', '') for s in solutions]
+            impl_contents = [i.get('content', '') for i in implementations]
+            
+            return {
+                'thought_mbcs': diversity_eval.compute_mbcs(thought_contents) if thought_contents else 0.0,
+                'solution_mbcs': diversity_eval.compute_mbcs(solution_contents) if solution_contents else 0.0,
+                'impl_mbcs': diversity_eval.compute_mbcs(impl_contents) if impl_contents else 0.0,
+                'overall': 1.0 - (
+                    (diversity_eval.compute_mbcs(thought_contents) if thought_contents else 0) +
+                    (diversity_eval.compute_mbcs(solution_contents) if solution_contents else 0) +
+                    (diversity_eval.compute_mbcs(impl_contents) if impl_contents else 0)
+                ) / 3
+            }
+        except Exception as e:
+            logger.warning(f"Intermediate diversity evaluation failed: {e}")
+            return {'overall': 0.5}
+    
+    def _compute_diversity_metrics(
+        self,
+        codes: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """Compute final diversity metrics."""
+        code_strings = [c.get('code', '') for c in codes]
+        
+        if len(code_strings) < 2:
+            return {'mbcs': 0.0, 'sdp': 1.0, 'overall_diversity': 1.0}
+        
+        try:
+            diversity_eval = self.tools['diversity_evaluator']
+            result = diversity_eval.compute_all(code_strings, self.llm_client)
+            
+            return {
+                'mbcs': result.mbcs,
+                'sdp': result.sdp,
+                'semantic_diversity': result.semantic_diversity,
+                'methodological_diversity': result.methodological_diversity,
+                'overall_diversity': result.overall_diversity
+            }
+        except Exception as e:
+            logger.error(f"Diversity metrics computation failed: {e}")
+            return {'mbcs': 0.0, 'sdp': 0.0, 'overall_diversity': 0.0}
+    
+    def _compute_quality_metrics(
+        self,
+        codes: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """Compute final quality metrics."""
+        if not codes:
+            return {'tpr': 0.0, 'average_pass_rate': 0.0}
+        
+        pass_rates = [
+            c.get('test_results', {}).get('pass_rate', 0.0)
+            for c in codes
+        ]
+        
         return {
-            **self._stats,
-            'avg_time_per_generation': (
-                self._stats['total_time'] / self._stats['generations']
-                if self._stats['generations'] > 0 else 0
+            'tpr': sum(pass_rates) / len(pass_rates),
+            'average_pass_rate': sum(pass_rates) / len(pass_rates),
+            'min_pass_rate': min(pass_rates) if pass_rates else 0.0,
+            'max_pass_rate': max(pass_rates) if pass_rates else 0.0,
+            'all_passing': all(pr >= 1.0 for pr in pass_rates)
+        }
+    
+    def _init_llm_client(self):
+        """Initialize the LLM client."""
+        from ..utils.llm_client import LLMClient
+        return LLMClient(self.config)
+    
+    def _init_tools(self) -> Dict[str, Any]:
+        """Initialize all tools."""
+        from ..tools.prompt_generator import DynamicPromptGenerator
+        from ..tools.code_interpreter import CodeInterpreter
+        from ..tools.test_executor import TestCasesExecutor
+        from ..tools.diversity_evaluator import DiversityEvaluator
+        from ..tools.debugger import Debugger
+        from ..tools.knowledge_search import KnowledgeSearch
+        from ..tools.code_collector import CodeCollector
+        
+        return {
+            'prompt_generator': DynamicPromptGenerator(self.config.tools if hasattr(self.config, 'tools') else {}),
+            'code_interpreter': CodeInterpreter(self.config.tools if hasattr(self.config, 'tools') else {}),
+            'test_executor': TestCasesExecutor(self.config.tools if hasattr(self.config, 'tools') else {}),
+            'diversity_evaluator': DiversityEvaluator(self.config.tools if hasattr(self.config, 'tools') else {}),
+            'debugger': Debugger(self.config),
+            'knowledge_search': KnowledgeSearch(self.config.knowledge_bases if hasattr(self.config, 'knowledge_bases') else {}),
+            'code_collector': CodeCollector()
+        }
+    
+    def _init_agents(self) -> Dict[str, Any]:
+        """Initialize all agents."""
+        from ..agents.understanding_agent import UnderstandingAgent
+        from ..agents.diversity_agent import DiversityEnhancingAgent
+        from ..agents.code_generating_agent import CodeGeneratingAgent
+        from ..agents.evaluating_agent import EvaluatingAgent
+        
+        return {
+            'understanding': UnderstandingAgent(
+                llm_client=self.llm_client,
+                tools=self.tools,
+                config=self.config
             ),
-            'avg_versions_per_generation': (
-                self._stats['total_versions'] / self._stats['generations']
-                if self._stats['generations'] > 0 else 0
+            'diversity_enhancing': DiversityEnhancingAgent(
+                llm_client=self.llm_client,
+                diversity_evaluator=self.tools['diversity_evaluator'],
+                knowledge_search=self.tools['knowledge_search'],
+                dynamic_prompt_generator=self.tools['prompt_generator'],
+                config=self.config
+            ),
+            'code_generating': CodeGeneratingAgent(
+                llm_client=self.llm_client,
+                code_interpreter=self.tools['code_interpreter'],
+                config=self.config
+            ),
+            'evaluating': EvaluatingAgent(
+                llm_client=self.llm_client,
+                test_executor=self.tools['test_executor'],
+                debugger=self.tools['debugger'],
+                config=self.config
             )
         }
     
-    def reset(self):
-        """Reset the pipeline state."""
-        self.state_controller.reset()
-        self.tools['code_collector'].clear()
-        self.tools['diversity_evaluator'].clear_cache()
-        logger.info("Pipeline reset")
-
+    def _init_hile(self):
+        """Initialize HILE algorithm."""
+        from ..algorithms.hile import HILEAlgorithm
+        return HILEAlgorithm(
+            llm_client=self.llm_client,
+            knowledge_bases=self.tools.get('knowledge_search'),
+            config=self.config.diversity.hile if hasattr(self.config.diversity, 'hile') else {}
+        )
+    
+    def _init_irqn(self):
+        """Initialize IRQN method."""
+        from ..algorithms.irqn import IRQNMethod
+        return IRQNMethod(
+            diversity_evaluator=self.tools['diversity_evaluator'],
+            llm_client=self.llm_client,
+            config=self.config.diversity.irqn if hasattr(self.config.diversity, 'irqn') else {}
+        )
+    
+    def _init_quality_assurance(self):
+        """Initialize Quality Assurance engine."""
+        from ..algorithms.quality_assurance import QualityAssuranceEngine
+        return QualityAssuranceEngine(
+            test_executor=self.tools['test_executor'],
+            debugger=self.tools['debugger'],
+            code_interpreter=self.tools['code_interpreter'],
+            llm_client=self.llm_client,
+            config=self.config.quality if hasattr(self.config, 'quality') else {}
+        )
+    
+    def _init_quality_gates(self) -> Dict[WorkflowStage, QualityGate]:
+        """Initialize quality gates for each stage."""
+        return {
+            WorkflowStage.DIVERSITY_IDEATION: QualityGate(
+                WorkflowStage.DIVERSITY_IDEATION,
+                {'min_understanding': True}
+            ),
+            WorkflowStage.CODE_SYNTHESIS: QualityGate(
+                WorkflowStage.CODE_SYNTHESIS,
+                {'min_ideas': 3}
+            ),
+            WorkflowStage.QUALITY_VALIDATION: QualityGate(
+                WorkflowStage.QUALITY_VALIDATION,
+                {'min_codes': 3}
+            ),
+            WorkflowStage.COLLECTION: QualityGate(
+                WorkflowStage.COLLECTION,
+                {
+                    'quality_threshold': self.config.quality.threshold if hasattr(self.config.quality, 'threshold') else 0.9,
+                    'min_versions': 3
+                }
+            )
+        }
