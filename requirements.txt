@@ -1,0 +1,54 @@
+# DeQoG - Diversity-Driven Quality-Assured Code Generation
+# Core Dependencies
+
+# LLM and AI
+openai>=1.12.0
+anthropic>=0.18.0
+transformers>=4.36.0
+torch>=2.1.0
+sentence-transformers>=2.2.2
+
+# Code Analysis
+codebert-base>=0.1.0
+ast-grep>=0.1.0
+pylint>=3.0.0
+black>=23.0.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.11.0
+
+# Configuration
+pyyaml>=6.0
+python-dotenv>=1.0.0
+hydra-core>=1.3.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Utilities
+tqdm>=4.66.0
+rich>=13.5.0
+click>=8.1.0
+loguru>=0.7.0
+
+# Async Support
+aiohttp>=3.9.0
+asyncio>=3.4.3
+
+# Jupyter Support
+jupyter>=1.0.0
+ipykernel>=6.25.0
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# Code Execution Sandbox
+RestrictedPython>=6.0
+
+# Development
+ipython>=8.12.0
+

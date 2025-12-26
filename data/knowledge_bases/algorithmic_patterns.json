@@ -1,0 +1,173 @@
+{
+  "dynamic_programming": {
+    "description": "Break problem into overlapping subproblems with optimal substructure",
+    "keywords": ["optimal", "subproblem", "memoization", "tabulation", "sequence", "dp"],
+    "use_cases": ["fibonacci", "knapsack", "longest common subsequence", "edit distance", "coin change", "matrix chain"],
+    "complexity": {
+      "time": "O(n*m) typically",
+      "space": "O(n*m) or O(n) with optimization"
+    },
+    "variants": ["top-down with memoization", "bottom-up tabulation", "space-optimized dp"],
+    "examples": [
+      {
+        "problem": "Longest Increasing Subsequence",
+        "approach": "dp[i] = max length ending at i",
+        "complexity": "O(n^2) or O(n log n) with binary search"
+      }
+    ]
+  },
+  "divide_and_conquer": {
+    "description": "Divide problem into independent subproblems, solve recursively, and combine results",
+    "keywords": ["divide", "merge", "recursive", "binary", "split", "conquer"],
+    "use_cases": ["merge sort", "quick sort", "binary search", "closest pair", "strassen matrix", "karatsuba multiplication"],
+    "complexity": {
+      "time": "O(n log n) typically",
+      "space": "O(log n) to O(n)"
+    },
+    "variants": ["recursive", "iterative", "parallel processing"],
+    "examples": [
+      {
+        "problem": "Merge Sort",
+        "approach": "Split array, sort halves, merge",
+        "complexity": "O(n log n)"
+      }
+    ]
+  },
+  "greedy": {
+    "description": "Make locally optimal choices at each step hoping to find global optimum",
+    "keywords": ["optimal", "choice", "selection", "minimum", "maximum", "local"],
+    "use_cases": ["activity selection", "huffman coding", "minimum spanning tree", "dijkstra", "fractional knapsack"],
+    "complexity": {
+      "time": "O(n log n) typically",
+      "space": "O(1) to O(n)"
+    },
+    "variants": ["sorting-based", "heap-based", "priority queue based"],
+    "examples": [
+      {
+        "problem": "Activity Selection",
+        "approach": "Sort by end time, greedily select non-overlapping",
+        "complexity": "O(n log n)"
+      }
+    ]
+  },
+  "backtracking": {
+    "description": "Explore all possibilities with pruning for constraint satisfaction",
+    "keywords": ["constraint", "permutation", "combination", "search", "prune", "backtrack"],
+    "use_cases": ["n-queens", "sudoku", "subset sum", "graph coloring", "hamiltonian path", "word search"],
+    "complexity": {
+      "time": "Exponential worst case",
+      "space": "O(n) for recursion stack"
+    },
+    "variants": ["recursive", "iterative with explicit stack", "with constraint propagation"],
+    "examples": [
+      {
+        "problem": "N-Queens",
+        "approach": "Place queens row by row, backtrack on conflict",
+        "complexity": "O(n!)"
+      }
+    ]
+  },
+  "two_pointers": {
+    "description": "Use two pointers to iterate through data structure efficiently",
+    "keywords": ["pair", "sum", "window", "sorted", "linear", "pointer"],
+    "use_cases": ["two sum sorted", "container with most water", "remove duplicates", "merge sorted arrays", "palindrome check"],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(1)"
+    },
+    "variants": ["opposite ends", "same direction", "fast-slow pointers"],
+    "examples": [
+      {
+        "problem": "Two Sum Sorted",
+        "approach": "Left and right pointers, move based on sum comparison",
+        "complexity": "O(n)"
+      }
+    ]
+  },
+  "sliding_window": {
+    "description": "Maintain a window over data for streaming or subarray computations",
+    "keywords": ["window", "substring", "subarray", "continuous", "stream", "sliding"],
+    "use_cases": ["maximum sum subarray", "longest substring without repeating", "minimum window substring", "anagrams"],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(k) for window size k"
+    },
+    "variants": ["fixed size window", "variable size window", "with auxiliary data structure"],
+    "examples": [
+      {
+        "problem": "Maximum Sum Subarray of Size K",
+        "approach": "Slide window, maintain running sum",
+        "complexity": "O(n)"
+      }
+    ]
+  },
+  "graph_traversal": {
+    "description": "Systematically visit nodes in a graph",
+    "keywords": ["graph", "node", "edge", "path", "connected", "traversal", "bfs", "dfs"],
+    "use_cases": ["shortest path", "cycle detection", "topological sort", "connected components", "bipartite check"],
+    "complexity": {
+      "time": "O(V+E)",
+      "space": "O(V)"
+    },
+    "variants": ["BFS", "DFS", "Dijkstra", "Bellman-Ford", "A*", "Floyd-Warshall"],
+    "examples": [
+      {
+        "problem": "Shortest Path Unweighted",
+        "approach": "BFS from source",
+        "complexity": "O(V+E)"
+      }
+    ]
+  },
+  "binary_search": {
+    "description": "Search in sorted data by repeatedly halving search space",
+    "keywords": ["sorted", "search", "half", "logarithmic", "monotonic", "binary"],
+    "use_cases": ["find element", "find boundary", "minimize/maximize", "rotated array", "peak element"],
+    "complexity": {
+      "time": "O(log n)",
+      "space": "O(1)"
+    },
+    "variants": ["standard binary search", "lower bound", "upper bound", "binary search on answer"],
+    "examples": [
+      {
+        "problem": "Find First Occurrence",
+        "approach": "Binary search with left bias",
+        "complexity": "O(log n)"
+      }
+    ]
+  },
+  "hash_table": {
+    "description": "Use hash-based data structure for O(1) average operations",
+    "keywords": ["hash", "dictionary", "map", "set", "lookup", "key-value"],
+    "use_cases": ["two sum", "group anagrams", "frequency count", "find duplicates", "subarray sum"],
+    "complexity": {
+      "time": "O(1) average",
+      "space": "O(n)"
+    },
+    "variants": ["dictionary/map", "set", "counter", "defaultdict"],
+    "examples": [
+      {
+        "problem": "Two Sum",
+        "approach": "Hash map to store complement",
+        "complexity": "O(n)"
+      }
+    ]
+  },
+  "stack_based": {
+    "description": "Use stack for LIFO operations and maintaining state",
+    "keywords": ["stack", "lifo", "parentheses", "monotonic", "history"],
+    "use_cases": ["valid parentheses", "next greater element", "evaluate expression", "simplify path"],
+    "complexity": {
+      "time": "O(n)",
+      "space": "O(n)"
+    },
+    "variants": ["basic stack", "monotonic stack", "min stack"],
+    "examples": [
+      {
+        "problem": "Next Greater Element",
+        "approach": "Monotonic decreasing stack",
+        "complexity": "O(n)"
+      }
+    ]
+  }
+}
+

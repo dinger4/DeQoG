@@ -1,0 +1,121 @@
+# DeQoG Default Configuration
+# Diversity-Driven Quality-Assured Code Generation
+
+# LLM配置
+llm:
+  model_name: "gpt-4"
+  api_key: "${OPENAI_API_KEY}"
+  api_base: "https://api.openai.com/v1"
+  temperature: 0.7
+  max_tokens: 2000
+  timeout: 60
+  retry_attempts: 3
+  retry_delay: 1.0
+
+# 多样性配置
+diversity:
+  threshold: 0.6
+  hile:
+    num_thoughts: 5
+    num_solutions: 3
+    num_implementations: 2
+  irqn:
+    p_qn1: 0.7
+    p_qn2: 0.3
+    max_iterations: 5
+    theta_diff: 0.3
+    theta_ident: 0.7
+
+# 质量保证配置
+quality:
+  threshold: 0.9
+  max_refinement_iterations: 5
+  test_timeout: 5
+
+# FSM配置
+fsm:
+  max_retries: 3
+  enable_rollback: true
+  decision_temperature: 0.1
+
+# N版本配置
+n_versions:
+  default_n: 5
+  min_n: 3
+  max_n: 10
+
+# 工具配置
+tools:
+  code_interpreter:
+    timeout: 5
+    sandbox_enabled: true
+    max_memory_mb: 256
+  diversity_evaluator:
+    model_name: "microsoft/codebert-base"
+    similarity_threshold: 0.7
+    cache_embeddings: true
+  test_executor:
+    parallel: true
+    max_workers: 4
+    timeout_per_test: 5
+  debugger:
+    max_analysis_depth: 3
+    include_stack_trace: true
+
+# 知识库配置
+knowledge_bases:
+  algorithmic_patterns: "data/knowledge_bases/algorithmic_patterns.json"
+  implementation_techniques: "data/knowledge_bases/implementation_techniques.json"
+  fault_tolerance_strategies: "data/knowledge_bases/fault_tolerance_strategies.json"
+
+# 数据集配置
+datasets:
+  root_dir: "data/datasets"
+  available:
+    - "MBPP"
+    - "HumanEval"
+    - "ClassEval"
+    - "MIPD"
+
+# 实验配置
+experiments:
+  fault_injection:
+    code_level_patterns:
+      - "Pat-CL 0"
+      - "Pat-CL 1"
+      - "Pat-CL 2"
+      - "Pat-CL 3"
+      - "Pat-CL 4"
+    algorithm_level_patterns:
+      - "Pat-AL 0"
+      - "Pat-AL 1"
+      - "Pat-AL 2"
+      - "Pat-AL 3"
+      - "Pat-AL 4"
+  ablation:
+    variants:
+      - "DeQoG-Full"
+      - "DeQoG-NoDiv"
+      - "DeQoG-NoQA"
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/deqog.log"
+  console: true
+  rich_traceback: true
+
+# 缓存配置
+cache:
+  enabled: true
+  directory: ".cache"
+  max_size_mb: 1000
+  ttl_hours: 24
+
+# 输出配置
+output:
+  save_intermediate: true
+  output_dir: "outputs"
+  format: "json"
+
