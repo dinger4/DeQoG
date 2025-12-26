@@ -1,299 +1,490 @@
 """
 DeQoG Fault Tolerance Metrics
 
-Metrics for evaluating fault tolerance capabilities of N-version systems.
+Metrics for evaluating the fault tolerance of N-version code systems.
+
+Based on the latest paper: "Automated Fault-Tolerant Code Generation via LLMs:
+A Diversity-Enhanced and Quality-Assured Approach"
+
+Key Metrics (Section 4.5):
+1. FR (Failure Rate): Percentage of tasks where majority voting fails
+2. AFVR (Additional Failure Versions Ratio): System degradation from fault injection
+3. Token Cost: Total input and output tokens consumed
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
 from collections import Counter
+import hashlib
 
 from ..utils.logger import get_logger
 
 logger = get_logger("fault_tolerance_metrics")
 
 
+@dataclass
+class FaultToleranceResult:
+    """Container for fault tolerance evaluation results."""
+    failure_rate: float              # FR: Percentage of failed majority votes
+    success_rate: float              # 1 - FR
+    afvr: Optional[float]            # AFVR: Additional Failure Versions Ratio
+    voting_details: Dict[str, Any]   # Detailed voting statistics
+    token_cost: Optional[int]        # Total token cost (if tracked)
+
+
+@dataclass
+class VotingResult:
+    """Result of majority voting on a single test case."""
+    voted_output: Any                # The majority-voted output
+    is_correct: bool                 # Whether the voted output matches expected
+    vote_counts: Dict[Any, int]      # Count of each output value
+    agreement_level: str             # "complete", "majority", "tie", "no_majority"
+    version_outputs: List[Any]       # Individual version outputs
+
+
 class FaultToleranceMetrics:
     """
-    Fault Tolerance Metrics.
+    Fault Tolerance Evaluation Metrics for N-Version Code.
     
-    Evaluates the fault tolerance of N-version code sets:
-    - FR (Failure Rate): System-level failure rate after voting
-    - MCR (Majority Consensus Rate): Rate of majority agreement
-    - CCR (Complete Consensus Rate): Rate of complete agreement
+    Implements the fault tolerance metrics from the DeQoG paper (Section 4.5):
+    
+    1. Failure Rate (FR):
+       - Percentage of tasks where majority voting produces correct output
+         despite injected faults
+       - Formula: FR = 1 - (Nc / Nt) × 100%
+       - Where Nc = number of tasks with correct majority voting output
+       - And Nt = total number of tasks
+       - LOWER FR indicates better fault tolerance
+    
+    2. Additional Failure Versions Ratio (AFVR):
+       - Measures system degradation by counting newly introduced failures
+       - Formula: AFVR = (N_failpost - N_failpre) / N_vers
+       - Where:
+         * N_failpost = number of failing versions post fault-injection
+         * N_failpre = number of failing versions pre fault-injection
+         * N_vers = total number of versions
+       - LOWER AFVR indicates better resilience to faults
+    
+    3. Token Cost:
+       - Total input and output tokens consumed during generation
+       - Used to evaluate efficiency of the approach
+    
+    Reference: Section 4.5 of the DeQoG paper
     """
+    
+    def __init__(self):
+        """Initialize fault tolerance metrics calculator."""
+        self._token_count = 0
+        logger.info("FaultToleranceMetrics initialized with FR and AFVR metrics")
+    
+    def majority_vote(
+        self,
+        version_outputs: List[Any]
+    ) -> VotingResult:
+        """
+        Perform majority voting on version outputs.
+        
+        Args:
+            version_outputs: List of outputs from each N-version
+            
+        Returns:
+            VotingResult with voting details
+        """
+        if not version_outputs:
+            return VotingResult(
+                voted_output=None,
+                is_correct=False,
+                vote_counts={},
+                agreement_level="no_versions",
+                version_outputs=[]
+            )
+        
+        # Normalize outputs for comparison (handle unhashable types)
+        normalized = []
+        for output in version_outputs:
+            try:
+                # Try to use the output directly as a hash key
+                hash(output)
+                normalized.append(output)
+            except TypeError:
+                # For unhashable types, use a string/hash representation
+                normalized.append(self._hash_output(output))
+        
+        # Count votes
+        vote_counts = Counter(normalized)
+        
+        # Find majority
+        n_versions = len(version_outputs)
+        majority_threshold = n_versions // 2 + 1
+        
+        most_common = vote_counts.most_common()
+        top_vote_count = most_common[0][1]
+        top_vote_output = most_common[0][0]
+        
+        # Determine agreement level
+        if top_vote_count == n_versions:
+            agreement_level = "complete"
+        elif top_vote_count >= majority_threshold:
+            agreement_level = "majority"
+        elif len(most_common) > 1 and most_common[0][1] == most_common[1][1]:
+            agreement_level = "tie"
+        else:
+            agreement_level = "plurality"  # Most votes but not majority
+        
+        # Get the original (non-normalized) output for the winning vote
+        # Find first occurrence of the winning normalized output
+        voted_output = None
+        for i, norm_out in enumerate(normalized):
+            if norm_out == top_vote_output:
+                voted_output = version_outputs[i]
+                break
+        
+        return VotingResult(
+            voted_output=voted_output,
+            is_correct=False,  # To be set by caller with expected output
+            vote_counts=dict(vote_counts),
+            agreement_level=agreement_level,
+            version_outputs=version_outputs
+        )
+    
+    def _hash_output(self, output: Any) -> str:
+        """Create a hashable representation of an output."""
+        return hashlib.md5(str(output).encode()).hexdigest()
     
     def compute_failure_rate(
         self,
-        voting_results: List[Dict[str, Any]]
-    ) -> float:
+        version_outputs_per_task: List[List[Any]],
+        expected_outputs: List[Any]
+    ) -> Tuple[float, Dict[str, Any]]:
         """
         Compute Failure Rate (FR).
         
-        Rate of test cases where the voted result is incorrect.
+        Formula: FR = 1 - (Nc / Nt) × 100%
+        
+        Where:
+        - Nc = number of tasks with correct majority voting output
+        - Nt = total number of tasks
         
         Args:
-            voting_results: List of voting result dictionaries
-                           Each should have 'system_correct' boolean
-                           
+            version_outputs_per_task: For each task, list of outputs from each version
+                                     Shape: [n_tasks][n_versions]
+            expected_outputs: Expected output for each task
+                             Shape: [n_tasks]
+        
         Returns:
-            Failure rate (0-1)
+            Tuple of (failure_rate, details)
         """
-        if not voting_results:
-            return 0.0
+        n_tasks = len(version_outputs_per_task)
         
-        failures = sum(
-            1 for r in voting_results
-            if not r.get('system_correct', True)
-        )
+        if n_tasks == 0:
+            return 0.0, {'error': 'No tasks provided'}
         
-        return failures / len(voting_results)
+        if len(expected_outputs) != n_tasks:
+            logger.error(f"Mismatch: {n_tasks} tasks but {len(expected_outputs)} expected outputs")
+            return 1.0, {'error': 'Task/expected output count mismatch'}
+        
+        correct_tasks = 0
+        task_details = []
+        
+        for i, (version_outputs, expected) in enumerate(zip(version_outputs_per_task, expected_outputs)):
+            vote_result = self.majority_vote(version_outputs)
+            
+            # Check if voted output matches expected
+            is_correct = self._outputs_match(vote_result.voted_output, expected)
+            vote_result.is_correct = is_correct
+            
+            if is_correct:
+                correct_tasks += 1
+            
+            task_details.append({
+                'task_index': i,
+                'voted_output': vote_result.voted_output,
+                'expected_output': expected,
+                'is_correct': is_correct,
+                'agreement_level': vote_result.agreement_level
+            })
+        
+        # FR = 1 - Nc / Nt
+        failure_rate = 1.0 - (correct_tasks / n_tasks)
+        
+        details = {
+            'total_tasks': n_tasks,
+            'correct_tasks': correct_tasks,
+            'failed_tasks': n_tasks - correct_tasks,
+            'failure_rate_percent': failure_rate * 100,
+            'task_details': task_details
+        }
+        
+        logger.info(f"FR computed: {failure_rate:.4f} ({n_tasks - correct_tasks}/{n_tasks} failed)")
+        return failure_rate, details
     
-    def compute_mcr(
+    def _outputs_match(self, output1: Any, output2: Any) -> bool:
+        """Check if two outputs match."""
+        try:
+            # Direct comparison
+            if output1 == output2:
+                return True
+            
+            # String comparison (for floating point tolerance)
+            if isinstance(output1, (int, float)) and isinstance(output2, (int, float)):
+                return abs(output1 - output2) < 1e-9
+            
+            # String normalization
+            return str(output1).strip() == str(output2).strip()
+        except Exception:
+            return False
+    
+    def compute_afvr(
         self,
-        voting_results: List[Dict[str, Any]]
+        versions_failing_pre: int,
+        versions_failing_post: int,
+        total_versions: int
     ) -> float:
         """
-        Compute Majority Consensus Rate (MCR).
+        Compute Additional Failure Versions Ratio (AFVR).
         
-        Rate of test cases where a majority of versions agree.
+        Measures system degradation by counting newly introduced failures
+        after fault injection.
+        
+        Formula: AFVR = (N_failpost - N_failpre) / N_vers
+        
+        Where:
+        - N_failpost = number of failing versions post fault-injection
+        - N_failpre = number of failing versions pre fault-injection
+        - N_vers = total number of versions
+        
+        Interpretation:
+        - AFVR = 0: No additional failures introduced (ideal)
+        - AFVR > 0: Some versions started failing after injection
+        - AFVR < 0: Some versions recovered (shouldn't happen normally)
         
         Args:
-            voting_results: List of voting result dictionaries
-                           Each should have 'has_majority_consensus' boolean
-                           
+            versions_failing_pre: Number of versions failing before injection
+            versions_failing_post: Number of versions failing after injection
+            total_versions: Total number of versions
+            
         Returns:
-            Majority consensus rate (0-1)
+            AFVR value
         """
-        if not voting_results:
+        if total_versions == 0:
+            logger.warning("Total versions is 0, returning 0.0 for AFVR")
             return 0.0
         
-        majority_consensus = sum(
-            1 for r in voting_results
-            if r.get('has_majority_consensus', False)
-        )
+        afvr = (versions_failing_post - versions_failing_pre) / total_versions
         
-        return majority_consensus / len(voting_results)
+        logger.info(f"AFVR computed: {afvr:.4f} "
+                   f"(pre: {versions_failing_pre}, post: {versions_failing_post}, total: {total_versions})")
+        
+        return afvr
     
-    def compute_ccr(
+    def compute_afvr_from_results(
         self,
-        voting_results: List[Dict[str, Any]]
-    ) -> float:
+        pre_injection_results: List[List[bool]],
+        post_injection_results: List[List[bool]]
+    ) -> Tuple[float, Dict[str, Any]]:
         """
-        Compute Complete Consensus Rate (CCR).
-        
-        Rate of test cases where all versions produce the same result.
+        Compute AFVR from pre and post injection test results.
         
         Args:
-            voting_results: List of voting result dictionaries
-                           Each should have 'all_agree' boolean
-                           
-        Returns:
-            Complete consensus rate (0-1)
-        """
-        if not voting_results:
-            return 0.0
+            pre_injection_results: Test results before fault injection
+                                   Shape: [n_versions][n_tests]
+            post_injection_results: Test results after fault injection
+                                    Shape: [n_versions][n_tests]
         
-        complete_consensus = sum(
-            1 for r in voting_results
-            if r.get('all_agree', False)
+        Returns:
+            Tuple of (AFVR, details)
+        """
+        n_versions = len(pre_injection_results)
+        
+        if n_versions != len(post_injection_results):
+            logger.error("Version count mismatch between pre and post injection")
+            return 0.0, {'error': 'Version count mismatch'}
+        
+        # Count failing versions (a version fails if ANY test fails)
+        versions_failing_pre = sum(
+            1 for results in pre_injection_results 
+            if not all(results)
         )
         
-        return complete_consensus / len(voting_results)
+        versions_failing_post = sum(
+            1 for results in post_injection_results 
+            if not all(results)
+        )
+        
+        afvr = self.compute_afvr(
+            versions_failing_pre,
+            versions_failing_post,
+            n_versions
+        )
+        
+        # Identify which versions changed status
+        newly_failing = []
+        recovered = []
+        
+        for i, (pre, post) in enumerate(zip(pre_injection_results, post_injection_results)):
+            pre_passing = all(pre)
+            post_passing = all(post)
+            
+            if pre_passing and not post_passing:
+                newly_failing.append(i)
+            elif not pre_passing and post_passing:
+                recovered.append(i)
+        
+        details = {
+            'total_versions': n_versions,
+            'versions_failing_pre': versions_failing_pre,
+            'versions_failing_post': versions_failing_post,
+            'newly_failing_versions': newly_failing,
+            'recovered_versions': recovered,
+            'afvr': afvr
+        }
+        
+        return afvr, details
+    
+    def track_token_cost(
+        self,
+        input_tokens: int = 0,
+        output_tokens: int = 0
+    ):
+        """
+        Track token consumption for cost evaluation.
+        
+        Args:
+            input_tokens: Number of input tokens
+            output_tokens: Number of output tokens
+        """
+        self._token_count += input_tokens + output_tokens
+    
+    def get_token_cost(self) -> int:
+        """Get total token cost tracked so far."""
+        return self._token_count
+    
+    def reset_token_cost(self):
+        """Reset token cost counter."""
+        self._token_count = 0
     
     def compute_all(
         self,
-        voting_results: List[Dict[str, Any]]
-    ) -> Dict[str, float]:
+        version_outputs_per_task: List[List[Any]],
+        expected_outputs: List[Any],
+        pre_injection_results: Optional[List[List[bool]]] = None,
+        post_injection_results: Optional[List[List[bool]]] = None
+    ) -> FaultToleranceResult:
         """
         Compute all fault tolerance metrics.
         
         Args:
-            voting_results: List of voting result dictionaries
+            version_outputs_per_task: Outputs from each version for each task
+            expected_outputs: Expected outputs
+            pre_injection_results: Optional pre-injection test results for AFVR
+            post_injection_results: Optional post-injection test results for AFVR
             
         Returns:
-            Dictionary of all metrics
+            FaultToleranceResult with all metrics
         """
-        return {
-            'failure_rate': self.compute_failure_rate(voting_results),
-            'mcr': self.compute_mcr(voting_results),
-            'ccr': self.compute_ccr(voting_results),
-            'success_rate': 1.0 - self.compute_failure_rate(voting_results)
-        }
+        # Compute FR
+        failure_rate, voting_details = self.compute_failure_rate(
+            version_outputs_per_task,
+            expected_outputs
+        )
+        
+        # Compute AFVR if injection results provided
+        afvr = None
+        if pre_injection_results is not None and post_injection_results is not None:
+            afvr, afvr_details = self.compute_afvr_from_results(
+                pre_injection_results,
+                post_injection_results
+            )
+            voting_details['afvr_details'] = afvr_details
+        
+        return FaultToleranceResult(
+            failure_rate=failure_rate,
+            success_rate=1.0 - failure_rate,
+            afvr=afvr,
+            voting_details=voting_details,
+            token_cost=self._token_count
+        )
     
-    def majority_vote(
+    def evaluate_voting_robustness(
         self,
-        outputs: List[Any]
-    ) -> tuple:
-        """
-        Perform majority voting on a list of outputs.
-        
-        Args:
-            outputs: List of outputs from N versions
-            
-        Returns:
-            Tuple of (voted_result, voting_info)
-        """
-        # Convert to string for comparison
-        str_outputs = [str(o) for o in outputs]
-        
-        # Count occurrences
-        counter = Counter(str_outputs)
-        
-        if not counter:
-            return None, {
-                'has_majority': False,
-                'all_agree': False,
-                'vote_distribution': {}
-            }
-        
-        # Get most common
-        most_common = counter.most_common()
-        voted_result_str = most_common[0][0]
-        vote_count = most_common[0][1]
-        
-        n = len(outputs)
-        
-        # Find original value
-        voted_result = None
-        for o, s in zip(outputs, str_outputs):
-            if s == voted_result_str:
-                voted_result = o
-                break
-        
-        return voted_result, {
-            'has_majority': vote_count > n // 2,
-            'all_agree': vote_count == n,
-            'vote_distribution': dict(counter),
-            'winning_count': vote_count,
-            'total_votes': n
-        }
-    
-    def run_voting_evaluation(
-        self,
-        version_outputs: List[List[Any]],
+        version_outputs_per_task: List[List[Any]],
         expected_outputs: List[Any]
-    ) -> List[Dict[str, Any]]:
-        """
-        Run voting evaluation across all test cases.
-        
-        Args:
-            version_outputs: List of output lists, one per version
-            expected_outputs: List of expected outputs
-            
-        Returns:
-            List of voting result dictionaries
-        """
-        if not version_outputs or not expected_outputs:
-            return []
-        
-        n_tests = len(expected_outputs)
-        n_versions = len(version_outputs)
-        
-        results = []
-        
-        for test_idx in range(n_tests):
-            # Gather outputs for this test case
-            outputs = []
-            for version_idx in range(n_versions):
-                if test_idx < len(version_outputs[version_idx]):
-                    outputs.append(version_outputs[version_idx][test_idx])
-                else:
-                    outputs.append(None)
-            
-            # Perform voting
-            voted_result, vote_info = self.majority_vote(outputs)
-            
-            # Check correctness
-            expected = expected_outputs[test_idx]
-            system_correct = self._compare_results(voted_result, expected)
-            
-            results.append({
-                'test_idx': test_idx,
-                'outputs': outputs,
-                'voted_result': voted_result,
-                'expected': expected,
-                'system_correct': system_correct,
-                'has_majority_consensus': vote_info['has_majority'],
-                'all_agree': vote_info['all_agree'],
-                'vote_distribution': vote_info['vote_distribution']
-            })
-        
-        return results
-    
-    def _compare_results(self, result: Any, expected: Any) -> bool:
-        """Compare voting result with expected output."""
-        if result is None:
-            return False
-        
-        # Direct comparison
-        if result == expected:
-            return True
-        
-        # String comparison
-        if str(result) == str(expected):
-            return True
-        
-        # Numeric comparison with tolerance
-        try:
-            if isinstance(result, (int, float)) and isinstance(expected, (int, float)):
-                return abs(float(result) - float(expected)) < 1e-9
-        except:
-            pass
-        
-        return False
-    
-    def analyze_fault_patterns(
-        self,
-        voting_results: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Analyze patterns in voting results.
+        Evaluate robustness of the voting mechanism.
+        
+        Analyzes how well the majority voting handles disagreements
+        and produces correct outputs.
         
         Args:
-            voting_results: Voting results from evaluation
+            version_outputs_per_task: Outputs from each version for each task
+            expected_outputs: Expected outputs
             
         Returns:
-            Analysis dictionary
+            Robustness analysis
         """
-        if not voting_results:
-            return {}
+        n_tasks = len(version_outputs_per_task)
         
-        total = len(voting_results)
+        agreement_counts = {
+            'complete': 0,
+            'majority': 0,
+            'plurality': 0,
+            'tie': 0
+        }
         
-        # Categorize results
-        correct_majority = 0
-        incorrect_majority = 0
-        no_majority = 0
-        all_wrong = 0
-        all_correct = 0
+        correct_by_agreement = {
+            'complete': 0,
+            'majority': 0,
+            'plurality': 0,
+            'tie': 0
+        }
         
-        for r in voting_results:
-            if r['all_agree']:
-                if r['system_correct']:
-                    all_correct += 1
-                else:
-                    all_wrong += 1
-            elif r['has_majority_consensus']:
-                if r['system_correct']:
-                    correct_majority += 1
-                else:
-                    incorrect_majority += 1
-            else:
-                no_majority += 1
+        for version_outputs, expected in zip(version_outputs_per_task, expected_outputs):
+            vote_result = self.majority_vote(version_outputs)
+            is_correct = self._outputs_match(vote_result.voted_output, expected)
+            
+            level = vote_result.agreement_level
+            if level in agreement_counts:
+                agreement_counts[level] += 1
+                if is_correct:
+                    correct_by_agreement[level] += 1
+        
+        # Calculate accuracy by agreement level
+        accuracy_by_agreement = {}
+        for level in agreement_counts:
+            count = agreement_counts[level]
+            correct = correct_by_agreement[level]
+            accuracy_by_agreement[level] = correct / count if count > 0 else 0.0
         
         return {
-            'total_tests': total,
-            'all_correct': all_correct,
-            'all_wrong': all_wrong,
-            'correct_majority': correct_majority,
-            'incorrect_majority': incorrect_majority,
-            'no_majority': no_majority,
-            'categories': {
-                'unanimous_correct': all_correct / total if total > 0 else 0,
-                'unanimous_wrong': all_wrong / total if total > 0 else 0,
-                'majority_correct': correct_majority / total if total > 0 else 0,
-                'majority_wrong': incorrect_majority / total if total > 0 else 0,
-                'no_consensus': no_majority / total if total > 0 else 0
-            }
+            'total_tasks': n_tasks,
+            'agreement_distribution': agreement_counts,
+            'correct_by_agreement': correct_by_agreement,
+            'accuracy_by_agreement': accuracy_by_agreement,
+            'complete_agreement_rate': agreement_counts['complete'] / n_tasks if n_tasks > 0 else 0.0
         }
 
+
+# Backward compatibility aliases
+def compute_mcr(voting_results: List[VotingResult]) -> float:
+    """
+    Deprecated: MCR is no longer used in the latest paper.
+    Use FaultToleranceMetrics.compute_failure_rate() instead.
+    """
+    logger.warning("compute_mcr is deprecated. Use FR metric instead.")
+    if not voting_results:
+        return 0.0
+    majority_count = sum(1 for r in voting_results if r.agreement_level == 'majority')
+    return majority_count / len(voting_results)
+
+
+def compute_ccr(voting_results: List[VotingResult]) -> float:
+    """
+    Deprecated: CCR is no longer used in the latest paper.
+    Use FaultToleranceMetrics.compute_failure_rate() instead.
+    """
+    logger.warning("compute_ccr is deprecated. Use FR metric instead.")
+    if not voting_results:
+        return 0.0
+    complete_count = sum(1 for r in voting_results if r.agreement_level == 'complete')
+    return complete_count / len(voting_results)

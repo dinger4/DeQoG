@@ -128,9 +128,9 @@ result = pipeline.generate_n_versions(
 
 # Access results
 print(f"Generated {len(result.n_version_codes)} versions")
-print(f"Diversity Metrics: MBCS={result.diversity_metrics['mbcs']:.3f}, "
+print(f"Diversity: LS={result.diversity_metrics['ls']:.3f}, "
       f"SDP={result.diversity_metrics['sdp']:.3f}")
-print(f"Quality Metrics: TPR={result.quality_metrics['tpr']:.2%}")
+print(f"Correctness: Pass@1={result.quality_metrics['pass_at_k'][1]:.2%}")
 ```
 
 ### Run Fault Injection Experiment
@@ -164,16 +164,16 @@ DeQoG/
 │   ├── agents/                       # LLM agents for each stage
 │   ├── tools/
 │   │   ├── prompt_generator.py       # Dynamic prompts + output formats
-│   │   ├── diversity_evaluator.py    # MBCS & SDP computation
+│   │   ├── diversity_evaluator.py    # LS & SDP computation
 │   │   └── ...
 │   ├── algorithms/
 │   │   ├── hile.py                   # HILE algorithm
 │   │   ├── irqn.py                   # IRQN method
 │   │   └── quality_assurance.py      # FBIR mechanism
 │   ├── metrics/
-│   │   ├── diversity_metrics.py      # MBCS, SDP metrics
-│   │   ├── correctness_metrics.py    # TPR metric
-│   │   └── fault_tolerance_metrics.py # FR, MCR, CCR metrics
+│   │   ├── diversity_metrics.py      # LS, SDP metrics
+│   │   ├── correctness_metrics.py    # Pass@k metric
+│   │   └── fault_tolerance_metrics.py # FR, AFVR metrics
 │   └── experiments/                  # Fault injection & ablation
 ├── configs/                          # YAML configuration files
 ├── data/
@@ -183,28 +183,37 @@ DeQoG/
 └── examples/                         # Usage examples
 ```
 
-## 📊 Evaluation Metrics
+## 📊 Evaluation Metrics (Section 4.5)
 
 ### Diversity Metrics
 
 | Metric | Formula | Interpretation |
 |--------|---------|----------------|
-| **MBCS** | `(2/N(N-1)) × Σ cos(embed(ci), embed(cj))` | Lower = More Diverse |
-| **SDP** | `different_pairs / total_pairs` | Higher = More Diverse |
+| **LS** | `LS_norm(ci, cj) = 1 - LD(ci, cj) / max(\|ci\|, \|cj\|)` | **Lower = More Diverse** (syntactic) |
+| **SDP** | `SDP = 1 - Σ_{i<j} S(ci, cj) / C(n,2)` | **Higher = More Diverse** (methodological) |
+
+Where:
+- `LD(ci, cj)` = Levenshtein distance (edit distance) between two codes
+- `S(ci, cj) ∈ {0, 1}` = strategy similarity (0=different, 1=similar)
 
 ### Correctness Metrics
 
 | Metric | Description |
 |--------|-------------|
-| **TPR** | Test Pass Rate - average pass rate across all versions |
+| **Pass@k** | Probability that at least one correct N-version set exists in k trials. In practice, requires ALL N versions to pass the complete test suite. |
 
 ### Fault Tolerance Metrics
 
+| Metric | Formula | Description |
+|--------|---------|-------------|
+| **FR** | `FR = 1 - (Nc/Nt) × 100%` | Failure Rate - percentage of tasks where majority voting fails. Nc = correct tasks, Nt = total tasks. **Lower = Better** |
+| **AFVR** | `AFVR = (N_failpost - N_failpre) / N_vers` | Additional Failure Versions Ratio - measures system degradation from fault injection. **Lower = More Resilient** |
+
+### Efficiency Metrics
+
 | Metric | Description |
 |--------|-------------|
-| **FR** | Failure Rate - system failure rate after majority voting |
-| **MCR** | Majority Consensus Rate - rate of majority agreement |
-| **CCR** | Complete Consensus Rate - rate of unanimous agreement |
+| **Token Cost** | Total input and output tokens consumed during generation |
 
 ## 🔧 Configuration
 
